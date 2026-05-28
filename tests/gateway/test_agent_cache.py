@@ -175,6 +175,29 @@ class TestExtractCacheBustingConfig:
         assert out["tools.registry_generation"] == 12345
 
 
+    def test_reads_agent_text_verbosity(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": "low", "some_other_key": "ignored"}}
+        )
+        assert out["agent.text_verbosity"] == "low"
+
+    def test_text_verbosity_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.text_verbosity": "low"},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.text_verbosity": "high"},
+        )
+        assert sig_before != sig_after
+
+
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
 
