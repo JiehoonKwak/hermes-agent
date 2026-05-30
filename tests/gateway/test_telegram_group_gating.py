@@ -15,6 +15,7 @@ def _make_adapter(
     exclusive_bot_mentions=None,
     ignored_threads=None,
     allowed_topics=None,
+    allowed_topic_chats=None,
     allow_from=None,
     group_allow_from=None,
     allowed_chats=None,
@@ -43,6 +44,10 @@ def _make_adapter(
         # environment; production adapters without this explicit key still fall
         # back to the env var.
         extra["allowed_topics"] = []
+    if allowed_topic_chats is not None:
+        extra["allowed_topic_chats"] = allowed_topic_chats
+    else:
+        extra["allowed_topic_chats"] = {}
     if allow_from is not None:
         extra["allow_from"] = allow_from
     if group_allow_from is not None:
@@ -675,6 +680,20 @@ def test_gating_forum_general_topic_normalizes_to_one():
 
     adapter2 = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
     assert adapter2._should_process_message(general) is False
+
+
+def test_allowed_topic_chats_scope_topic_filters_to_matching_chat():
+    adapter = _make_adapter(
+        require_mention=False,
+        allowed_chats=["-100", "-505"],
+        allowed_topic_chats={"-100": ["1", "2"]},
+    )
+
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=2)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=3)) is False
+    assert adapter._should_process_message(_group_message("hello", chat_id=-505, thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-505, thread_id=99)) is True
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():

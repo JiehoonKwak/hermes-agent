@@ -6313,6 +6313,43 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_allowed_topic_chats(self) -> dict[str, set[str]]:
+        """Return per-chat Telegram forum topic allowlists.
+
+        ``allowed_topics`` is global across groups. This scoped form lets a
+        profile own selected topics in one forum group while preserving existing
+        behavior in other allowed groups.
+        """
+        raw = self.config.extra.get("allowed_topic_chats") or {}
+        if not isinstance(raw, dict):
+            logger.warning("[%s] telegram allowed_topic_chats must be a mapping; got %s", self.name, type(raw).__name__)
+            return {}
+
+        def _topic_set(value: Any) -> set[str]:
+            if isinstance(value, (list, tuple, set)):
+                return {str(part).strip() for part in value if str(part).strip()}
+            return {part.strip() for part in str(value).split(",") if part.strip()}
+
+        result: dict[str, set[str]] = {}
+        for chat_id, topics in raw.items():
+            chat_key = str(chat_id).strip()
+            if chat_key:
+                result[chat_key] = _topic_set(topics)
+        return result
+
+    def _telegram_topic_allowed_for_chat(self, chat_id: str, thread_id: Any) -> bool:
+        topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        scoped_topics = self._telegram_allowed_topic_chats()
+        if scoped_topics:
+            allowed_for_chat = scoped_topics.get(str(chat_id))
+            if allowed_for_chat is not None:
+                return topic_id in allowed_for_chat
+
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            return topic_id in allowed_topics
+        return True
+
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
@@ -6582,11 +6619,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
         thread_id = getattr(message, "message_thread_id", None)
-        allowed_topics = self._telegram_allowed_topics()
-        if allowed_topics:
-            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
-            if topic_id not in allowed_topics:
-                return False
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if not self._telegram_topic_allowed_for_chat(chat_id_str, thread_id):
+            return False
 
         if thread_id is not None:
             try:
@@ -6595,7 +6630,6 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 return False
 
-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
 
@@ -6936,11 +6970,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         thread_id = self._effective_message_thread_id(message)
-        allowed_topics = self._telegram_allowed_topics()
-        if allowed_topics:
-            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
-            if topic_id not in allowed_topics:
-                return False
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if not self._telegram_topic_allowed_for_chat(chat_id_str, thread_id):
+            return False
 
         # Check ignored_threads first — applies to both groups and DM topics
         if thread_id is not None:
@@ -6957,8 +6989,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not is_command and chat_id in self._dm_topic_chat_ids:
                     return False
             return True
-
-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
