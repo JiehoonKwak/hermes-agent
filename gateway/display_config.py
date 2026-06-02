@@ -225,9 +225,15 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
+    if setting == "streaming":
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("-", "_")
+            if normalized in {"dm_only", "private_only"}:
+                return normalized
+            return normalized in {"true", "1", "yes", "on"}
+        return bool(value)
     if setting in {
         "show_reasoning",
-        "streaming",
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",

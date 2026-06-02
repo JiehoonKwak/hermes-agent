@@ -1865,6 +1865,28 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+_TELEGRAM_DM_ONLY_STREAMING_MODES = {"dm_only", "private_only"}
+
+
+def _resolve_gateway_streaming_enabled(
+    platform_streaming: Any,
+    streaming_config: Any,
+    source: Any,
+    platform_key: str,
+) -> bool:
+    """Resolve gateway token streaming, including Telegram private-chat modes."""
+    transport = str(getattr(streaming_config, "transport", "") or "").strip().lower()
+    if isinstance(platform_streaming, str):
+        mode = platform_streaming.strip().lower().replace("-", "_")
+        if mode in _TELEGRAM_DM_ONLY_STREAMING_MODES:
+            chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+            return platform_key == "telegram" and transport != "off" and chat_type in {"dm", "private"}
+        return mode in {"true", "1", "yes", "on"}
+    if platform_streaming is None:
+        return bool(getattr(streaming_config, "enabled", False) and transport != "off")
+    return bool(platform_streaming)
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -13513,10 +13535,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
         )
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
+        _streaming_enabled = _resolve_gateway_streaming_enabled(
+            _plat_streaming, _scfg, source, platform_key
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
@@ -14616,11 +14636,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _plat_streaming = resolve_display_setting(
                 user_config, platform_key, "streaming"
             )
-            # None = no per-platform override → follow global config
-            _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
-                if _plat_streaming is None
-                else bool(_plat_streaming)
+            _streaming_enabled = _resolve_gateway_streaming_enabled(
+                _plat_streaming, _scfg, source, platform_key
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled

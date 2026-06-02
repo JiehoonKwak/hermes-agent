@@ -390,6 +390,28 @@ class TestStreamingPerPlatform:
         }
         assert resolve_display_setting(config, "email", "streaming") is True
 
+    def test_dm_only_mode_is_preserved(self):
+        """Telegram can opt into streaming only for private/DM chats."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"telegram": {"streaming": "dm_only"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "streaming") == "dm_only"
+
+    def test_private_only_mode_alias_is_preserved(self):
+        """Accept private-only as a readable alias for dm_only behavior."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"telegram": {"streaming": "private-only"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "streaming") == "private_only"
+
 
 # ---------------------------------------------------------------------------
 # cleanup_progress — opt-in deletion of temporary progress bubbles
