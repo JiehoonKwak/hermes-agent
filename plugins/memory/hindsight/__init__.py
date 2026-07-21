@@ -1819,11 +1819,32 @@ class HindsightMemoryProvider(MemoryProvider):
         # 1. Flush any buffered turns under the OLD identifiers. Snapshot
         # everything before mutating self._* so metadata + tags + doc_id
         # all reference the old session consistently.
+        old_turns: list[str] = []
+        old_session_id = ""
+        old_parent_session_id = ""
+        old_turn_index = 0
+        old_document_id = ""
+        old_update_mode: str | None = None
         if self._session_turns:
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id
             old_turn_index = self._turn_index
+            # Resolve doc_id + update_mode against the OLD session BEFORE
+            # we rotate _session_id, so the flush lands in the old
+            # session's document either way (legacy: per-process unique;
+            # >=0.5.0: stable session-scoped + append).
+            old_document_id, old_update_mode = self._resolve_retain_target(
+                self._document_id
+            )
+            # Append-capable APIs have already received every turn below the
+            # watermark. Flush only the unsent tail; otherwise a session
+            # switch re-appends previously retained turns and creates duplicate
+            # raw facts. Legacy overwrite mode still needs the full session.
+            if old_update_mode == "append":
+                old_turns = old_turns[self._last_retained_turn_count:]
+
+        if old_turns:
             old_metadata = self._build_metadata(
                 message_count=len(old_turns) * 2,
                 turn_index=old_turn_index,
@@ -1834,14 +1855,6 @@ class HindsightMemoryProvider(MemoryProvider):
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
             old_content = "[" + ",".join(old_turns) + "]"
-            # Resolve doc_id + update_mode against the OLD session BEFORE
-            # we rotate _session_id, so the flush lands in the old
-            # session's document either way (legacy: per-process unique;
-            # ≥0.5.0: stable session-scoped + append).
-            old_document_id, old_update_mode = self._resolve_retain_target(
-                self._document_id
-            )
-
             def _flush():
                 try:
                     item = self._build_retain_kwargs(

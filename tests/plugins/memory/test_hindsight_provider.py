@@ -1194,6 +1194,83 @@ class TestShutdownRace:
 
 
 class TestSessionSwitchBufferFlush:
+    def test_append_switch_skips_turns_already_retained(
+        self, provider_with_config, monkeypatch
+    ):
+        """Append mode must not resend an already retained cadence-1 turn."""
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        monkeypatch.setattr(
+            p,
+            "_resolve_retain_target",
+            lambda _document_id: ("test-session", "append"),
+        )
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 1
+
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 1
+
+    def test_append_switch_flushes_only_unsent_delta(
+        self, provider_with_config, monkeypatch
+    ):
+        """A partial cadence buffer flushes without duplicating sent turns."""
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        monkeypatch.setattr(
+            p,
+            "_resolve_retain_target",
+            lambda _document_id: ("test-session", "append"),
+        )
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        p.sync_turn("turn3-user", "turn3-asst")
+
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        content = json.loads(
+            p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        )
+        flat = json.dumps(content)
+        assert "turn3-user" in flat
+        assert "turn1-user" not in flat
+        assert "turn2-user" not in flat
+
+    def test_legacy_switch_keeps_full_session_overwrite(
+        self, provider_with_config, monkeypatch
+    ):
+        """Legacy overwrite mode still needs all accumulated session turns."""
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        old_document_id = p._document_id
+        monkeypatch.setattr(
+            p,
+            "_resolve_retain_target",
+            lambda _document_id: (old_document_id, None),
+        )
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        p.sync_turn("turn3-user", "turn3-asst")
+
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        content = json.loads(
+            p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        )
+        flat = json.dumps(content)
+        assert "turn1-user" in flat
+        assert "turn2-user" in flat
+        assert "turn3-user" in flat
+
     def test_buffered_turns_flushed_before_clear(self, provider_with_config):
         """retain_every_n_turns > 1 must not silently drop partial buffers
         on session switch. Whatever's in _session_turns at switch time
