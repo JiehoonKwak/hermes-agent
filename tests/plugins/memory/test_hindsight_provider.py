@@ -1454,6 +1454,70 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
+    def test_per_retain_mode_uses_unique_delta_documents(
+        self, provider_with_config, monkeypatch
+    ):
+        """Opt-in per-retain mode avoids existing-document append reprocessing."""
+        self._clear_capability_cache()
+        probe = MagicMock(return_value="0.8.4")
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            probe,
+        )
+        p = provider_with_config(
+            retain_document_mode="per_retain",
+            retain_every_n_turns=1,
+            retain_async=False,
+        )
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._retain_queue.join()
+        first = p._client.aretain_batch.call_args
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        second = p._client.aretain_batch.call_args
+
+        first_doc = first.kwargs["document_id"]
+        second_doc = second.kwargs["document_id"]
+        assert first_doc != second_doc
+        assert first_doc.endswith("-retain-1")
+        assert second_doc.endswith("-retain-2")
+        assert "update_mode" not in first.kwargs["items"][0]
+        assert "update_mode" not in second.kwargs["items"][0]
+        second_content = second.kwargs["items"][0]["content"]
+        assert "turn2-user" in second_content
+        assert "turn1-user" not in second_content
+        probe.assert_not_called()
+
+    def test_per_retain_switch_flush_uses_unique_delta_document(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            retain_document_mode="per_retain",
+            retain_every_n_turns=2,
+            retain_async=False,
+        )
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        p.sync_turn("turn3-user", "turn3-asst")
+
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        call = p._client.aretain_batch.call_args
+        assert call.kwargs["document_id"].endswith("-retain-3")
+        assert "update_mode" not in call.kwargs["items"][0]
+        content = call.kwargs["items"][0]["content"]
+        assert "turn3-user" in content
+        assert "turn1-user" not in content
+        assert "turn2-user" not in content
+
+    def test_invalid_retain_document_mode_is_rejected(self, provider_with_config):
+        with pytest.raises(ValueError, match="retain_document_mode"):
+            provider_with_config(retain_document_mode="shared_append")
+
     def test_capability_cached_per_url(self, provider, monkeypatch):
         """The /version probe must run at most once per (process, api_url)."""
         self._clear_capability_cache()

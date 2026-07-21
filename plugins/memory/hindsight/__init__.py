@@ -686,6 +686,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_every_n_turns = 1
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
+        self._retain_document_mode = "auto"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
         # How many turns the last append-mode retain already shipped. Used to
@@ -999,6 +1000,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
+            {"key": "retain_document_mode", "description": "Document strategy: auto reuses a session document with append when supported; per_retain writes each delta to a unique document", "default": "auto", "choices": ["auto", "per_retain"]},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
@@ -1193,6 +1195,8 @@ class HindsightMemoryProvider(MemoryProvider):
         round-trip per (process, api_url) pair regardless of how many
         retains fire.
         """
+        if self._retain_document_mode == "per_retain":
+            return f"{fallback_document_id}-retain-{self._turn_index}", None
         if not self._session_id:
             return fallback_document_id, None
         if _check_api_supports_update_mode_append(self._probe_url(), self._api_key):
@@ -1334,6 +1338,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._retain_document_mode = str(
+            self._config.get("retain_document_mode", "auto")
+        ).strip().lower()
+        if self._retain_document_mode not in {"auto", "per_retain"}:
+            raise ValueError(
+                "retain_document_mode must be 'auto' or 'per_retain', got "
+                f"{self._retain_document_mode!r}"
+            )
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
@@ -1366,9 +1378,10 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_document_mode=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._retain_document_mode, self._retain_context,
+                     self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1634,7 +1647,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # accumulated since the last retain — the server appends them to the
         # existing document. On legacy/overwrite APIs we must resend the whole
         # session because each retain replaces the document.
-        if update_mode == "append":
+        uses_delta = update_mode == "append" or self._retain_document_mode == "per_retain"
+        if uses_delta:
             turns_to_retain = self._session_turns[self._last_retained_turn_count:]
             if not turns_to_retain:
                 logger.debug("sync_turn: skipped append retain; no new turns since last retain")
@@ -1692,7 +1706,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_queue.put(_do_retain)
         # Advance the append watermark only after the delta is queued, so a
         # later retain doesn't re-ship turns we've already handed to the writer.
-        if update_mode == "append":
+        if uses_delta:
             self._last_retained_turn_count = len(self._session_turns)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -1841,7 +1855,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # watermark. Flush only the unsent tail; otherwise a session
             # switch re-appends previously retained turns and creates duplicate
             # raw facts. Legacy overwrite mode still needs the full session.
-            if old_update_mode == "append":
+            if old_update_mode == "append" or self._retain_document_mode == "per_retain":
                 old_turns = old_turns[self._last_retained_turn_count:]
 
         if old_turns:
