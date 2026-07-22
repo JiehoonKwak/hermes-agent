@@ -145,4 +145,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Hermes selects and lazy-installs `hindsight-client == 0.8.6`. The setup manifest accepts `hindsight-client >= 0.8.6,<0.10`; session start attempts to auto-upgrade an older installation.
