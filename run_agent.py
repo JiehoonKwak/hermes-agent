@@ -3878,6 +3878,25 @@ class AIAgent:
             sync_kwargs = {"session_id": self.session_id or ""}
             if messages is not None:
                 sync_kwargs["messages"] = messages
+            try:
+                from gateway.session_context import (
+                    get_session_env,
+                    session_context_engaged,
+                )
+
+                if session_context_engaged():
+                    turn_context = {
+                        "platform": get_session_env("HERMES_SESSION_PLATFORM", ""),
+                        "chat_type": str(getattr(self, "chat_type", "") or ""),
+                        "user_name": get_session_env("HERMES_SESSION_USER_NAME", ""),
+                    }
+                    turn_context = {
+                        key: value for key, value in turn_context.items() if value
+                    }
+                    if turn_context:
+                        sync_kwargs["turn_context"] = turn_context
+            except Exception:
+                pass
             self._memory_manager.sync_all(
                 user_text,
                 response_text,

@@ -120,6 +120,7 @@ class MemoryProvider(ABC):
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        turn_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist a completed turn to the backend.
 
@@ -129,6 +130,11 @@ class MemoryProvider(ABC):
         ``messages`` is the OpenAI-style conversation message list as of the
         completed turn, including any assistant tool calls and tool results.
         Providers that do not need raw turn context can ignore it.
+
+        ``turn_context`` contains structured routing provenance for the current
+        completed turn (for example platform, chat type, and sender display
+        name). Long-lived shared-session providers must prefer it over cached
+        initialize-time identity.
         """
 
     @abstractmethod

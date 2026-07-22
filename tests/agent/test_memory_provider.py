@@ -94,6 +94,23 @@ class MessagesMemoryProvider(FakeMemoryProvider):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
 
 
+class TurnContextMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into current-turn routing provenance."""
+
+    def sync_turn(
+        self,
+        user_content,
+        assistant_content,
+        *,
+        session_id="",
+        messages=None,
+        turn_context=None,
+    ):
+        self.synced_turns.append(
+            (user_content, assistant_content, session_id, messages, turn_context)
+        )
+
+
 class BlockingPrefetchProvider(FakeMemoryProvider):
     """External provider whose prefetch call blocks until released."""
 
@@ -201,6 +218,38 @@ class TestMemoryManager:
 
 
 
+
+    def test_sync_all_passes_turn_context_only_to_opted_in_provider(self):
+        mgr = MemoryManager()
+        current = TurnContextMemoryProvider("current")
+        legacy = FakeMemoryProvider("builtin")
+        mgr.add_provider(current)
+        mgr.add_provider(legacy)
+        turn_context = {
+            "platform": "telegram",
+            "chat_type": "group",
+            "user_name": "Minji Kim",
+        }
+
+        mgr.sync_all(
+            "user msg",
+            "assistant msg",
+            session_id="sess-1",
+            messages=[{"role": "user", "content": "user msg"}],
+            turn_context=turn_context,
+        )
+        mgr.flush_pending(timeout=5)
+
+        assert current.synced_turns == [
+            (
+                "user msg",
+                "assistant msg",
+                "sess-1",
+                [{"role": "user", "content": "user msg"}],
+                turn_context,
+            )
+        ]
+        assert legacy.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""

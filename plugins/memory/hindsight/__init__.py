@@ -48,6 +48,7 @@ from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
+from .retain_payload import serialize_auto_retain_turn
 
 logger = logging.getLogger(__name__)
 
@@ -772,6 +773,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_every_n_turns = 1
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
+        self._retain_payload_mode = "legacy"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
         # How many turns the last append-mode retain already shipped. Used to
@@ -1088,6 +1090,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
+            {"key": "retain_payload_mode", "description": "Auto-retain payload: legacy keeps the upstream role transcript; provenance_v2 removes Hermes transport/runtime envelopes and preserves user/agent authorship lanes", "default": "legacy", "choices": ["legacy", "provenance_v2"]},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
@@ -1415,6 +1418,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._retain_payload_mode = str(
+            self._config.get("retain_payload_mode", "legacy")
+        ).strip().lower()
+        if self._retain_payload_mode not in {"legacy", "provenance_v2"}:
+            raise ValueError(
+                "retain_payload_mode must be 'legacy' or 'provenance_v2', got "
+                f"{self._retain_payload_mode!r}"
+            )
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
@@ -1447,9 +1458,11 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_payload_mode=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._retain_payload_mode,
+                     self._retain_context,
+                     self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1622,6 +1635,35 @@ class HindsightMemoryProvider(MemoryProvider):
             },
         ]
 
+    def _serialize_auto_retain_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        messages: List[Dict[str, Any]] | None = None,
+        turn_context: Dict[str, Any] | None = None,
+    ) -> str:
+        """Serialize one turn using the configured, rollback-safe payload mode."""
+        if self._retain_payload_mode == "legacy":
+            return json.dumps(
+                self._build_turn_messages(user_content, assistant_content),
+                ensure_ascii=False,
+            )
+        current = turn_context or {}
+        return serialize_auto_retain_turn(
+            _sanitize_retain_message_content(user_content),
+            _sanitize_retain_message_content(assistant_content),
+            user_name=(
+                str(current.get("user_name") or "").strip()
+                or self._user_name
+                or self._retain_user_prefix
+            ),
+            agent_name=self._retain_assistant_prefix,
+            platform=str(current.get("platform") or "").strip() or self._platform,
+            chat_type=str(current.get("chat_type") or "").strip() or self._chat_type,
+            messages=messages,
+        )
+
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
         metadata: Dict[str, str] = {
             "retained_at": _utc_timestamp(),
@@ -1681,7 +1723,15 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: List[Dict[str, Any]] | None = None,
+        turn_context: Dict[str, Any] | None = None,
+    ) -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
         The actual aretain_batch runs on a single long-lived writer thread
@@ -1699,7 +1749,12 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
-        turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
+        turn = self._serialize_auto_retain_turn(
+            user_content,
+            assistant_content,
+            messages=messages,
+            turn_context=turn_context,
+        )
         self._session_turns.append(turn)
         self._turn_counter += 1
         self._turn_index = self._turn_counter

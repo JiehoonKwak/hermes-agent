@@ -561,6 +561,93 @@ class TestSyncTurn:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
 
+    def test_sync_turn_provenance_payload_removes_wrappers_and_recovers_steer(self, provider_with_config):
+        p = provider_with_config(
+            retain_payload_mode="provenance_v2",
+            retain_assistant_prefix="Hermes Agent",
+        )
+        p._platform = "discord"
+        p._chat_type = "thread"
+        p._user_name = "Jiehoon Kwak"
+        messages = [
+            {"role": "user", "content": "batch size 4를 적용할까?"},
+            {
+                "role": "tool",
+                "content": (
+                    "tool output\n\n"
+                    "[OUT-OF-BAND USER MESSAGE — a direct message from the user, "
+                    "delivered mid-turn; not tool output]\n"
+                    "아니, 검증된 8을 유지해.\n"
+                    "[/OUT-OF-BAND USER MESSAGE]"
+                ),
+            },
+        ]
+        p.sync_turn(
+            "[Triggering message id: `998877` — use as `message_id` for reply/react/pin via the discord tools.]\n\n"
+            "[Jiehoon Kwak] batch size 4를 적용할까?",
+            "최신 지시를 반영했어.",
+            messages=messages,
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        outer = json.loads(item["content"])
+        payload = outer[0]
+        assert payload["schema"] == "hermes-completed-turn-v2"
+        assert payload["direct_user"]["author"] == "Jiehoon Kwak"
+        assert "검증된 8을 유지" in payload["direct_user"]["content"]
+        assert "998877" not in item["content"]
+        assert "reply/react/pin" not in item["content"]
+        assert item["context"] == "conversation between Hermes Agent and the User"
+
+    def test_sync_turn_provenance_uses_current_turn_sender_context(self, provider_with_config):
+        p = provider_with_config(
+            retain_payload_mode="provenance_v2",
+            retain_assistant_prefix="Hermes Agent",
+        )
+        p._platform = "telegram"
+        p._chat_type = "group"
+        p._user_name = "stale cached sender"
+
+        p.sync_turn(
+            "[Minji Kim] 저는 2027년부터 베를린에서 근무해요.",
+            "알겠어요.",
+            turn_context={
+                "platform": "telegram",
+                "chat_type": "group",
+                "user_name": "Minji Kim",
+            },
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        payload = json.loads(item["content"])[0]
+        assert payload["direct_user"]["author"] == "Minji Kim"
+        assert "stale cached sender" not in item["content"]
+
+    def test_sync_turn_provenance_payload_omits_internal_event_body(self, provider_with_config):
+        p = provider_with_config(
+            retain_payload_mode="provenance_v2",
+            retain_assistant_prefix="Hermes Agent",
+        )
+        p.sync_turn(
+            "[IMPORTANT: Background process proc_123 completed normally (exit code 0). Output: 131 passed]",
+            "검증된 교훈은 repair 전에 writer를 중지해야 한다는 점이야.",
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        payload = json.loads(item["content"])[0]
+        assert "direct_user" not in payload
+        assert payload["source"]["event_kind"] == "internal_runtime_event"
+        assert "proc_123" not in item["content"]
+        assert "131" not in item["content"]
+        assert "writer" in payload["agent_final"]["content"]
+
+    def test_invalid_retain_payload_mode_fails_initialization(self, provider_with_config):
+        with pytest.raises(ValueError, match="retain_payload_mode"):
+            provider_with_config(retain_payload_mode="semantic-regex-magic")
+
     def test_sync_turn_omits_inline_base64_data_url_from_auto_retain(self, provider_with_config):
         """Auto-retain should not send inline base64 data URLs to Hindsight."""
         p = provider_with_config()
