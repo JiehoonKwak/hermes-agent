@@ -55,6 +55,39 @@ class TestSyncExternalMemoryForTurn:
         agent._memory_manager.queue_prefetch_all.assert_not_called()
 
 
+    def test_gateway_turn_passes_current_sender_context(self, monkeypatch):
+        import gateway.session_context as session_context
+
+        values = {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_USER_NAME": "Minji Kim",
+        }
+        monkeypatch.setattr(session_context, "session_context_engaged", lambda: True)
+        monkeypatch.setattr(
+            session_context,
+            "get_session_env",
+            lambda name, default="": values.get(name, default),
+        )
+        agent = _bare_agent()
+        agent.chat_type = "group"
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="[Minji Kim] 안녕하세요.",
+            final_response="안녕하세요.",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "[Minji Kim] 안녕하세요.",
+            "안녕하세요.",
+            session_id="test_session_001",
+            turn_context={
+                "platform": "telegram",
+                "chat_type": "group",
+                "user_name": "Minji Kim",
+            },
+        )
+
     # --- Normal completed turn still syncs ------------------------------
 
 
