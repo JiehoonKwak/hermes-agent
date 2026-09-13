@@ -10,12 +10,14 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
 import os
 import shutil
 import sqlite3
+import stat
 import struct
 import sys
 import threading
@@ -29,6 +31,32 @@ from hermes_state_common import (
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
+
+
+def secure_state_db_files_macos(db_path: Path, *, create_main: bool = False) -> None:
+    """Closing even an O_EVTONLY fd cancels SQLite's POSIX locks on macOS.
+
+    Change existing files by pathname without following symlinks. Only an
+    exclusively created, not-yet-opened database gets a descriptor to close.
+    """
+    if create_main:
+        try:
+            fd = os.open(db_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    for path in (db_path, db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")):
+        try:
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                continue  # sqlite3.connect owns the canonical directory error.
+            if not stat.S_ISREG(mode):
+                code = errno.ELOOP if stat.S_ISLNK(mode) else errno.EINVAL
+                raise OSError(code, "Refusing a non-regular SQLite database file", str(path))
+            os.chmod(path, 0o600, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
 
 
 def _prepare_connection_retirement():

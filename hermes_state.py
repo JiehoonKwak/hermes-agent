@@ -229,6 +229,10 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     """
     if os.name == "nt":
         return
+    if sys.platform == "darwin":
+        from hermes_state_dbfile import secure_state_db_files_macos
+        secure_state_db_files_macos(db_path, create_main=create_main)
+        return
 
     for index, path in enumerate(
         (
